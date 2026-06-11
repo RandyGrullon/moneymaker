@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Demo Exness",
+    "login": 12345678,
+    "password": "tu_password_demo",
+    "server": "Exness-MT5Trial"
+  },
+  {
+    "name": "Real IC Markets",
+    "login": 87654321,
+    "password": "tu_password_real",
+    "server": "ICMarketsSC-MT5"
+  }
+]

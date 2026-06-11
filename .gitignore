@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables & secrets
+.env
+accounts.json
+
+# Databases
+bot_memory.db
+
+# Virtual environments
+venv/
+.venv/
+env/
