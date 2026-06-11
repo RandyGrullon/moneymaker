@@ -15,7 +15,11 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # MetaTrader 5
-MT5_LOGIN = int(os.getenv("MT5_LOGIN") or 0)
+try:
+    MT5_LOGIN = int(os.getenv("MT5_LOGIN") or 0)
+except ValueError:
+    print("AVISO: MT5_LOGIN debe ser un número entero (ID de cuenta). Se ignorará para usar el terminal MT5 abierto.")
+    MT5_LOGIN = 0
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
 MT5_PATH = os.getenv("MT5_PATH", "")
