@@ -45,6 +45,11 @@ class Memory:
                 from_profit REAL,
                 created_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule TEXT,
+                created_at TEXT
+            );
             """)
             self.conn.commit()
 
@@ -88,6 +93,32 @@ class Memory:
             )
             return [dict(r) for r in cur.fetchall()]
 
+    def get_trade(self, position_id) -> dict | None:
+        """Trade por id de posicion (para recuperar la tesis original al gestionar)."""
+        with _lock:
+            cur = self.conn.execute(
+                "SELECT * FROM trades WHERE position_id=?", (position_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def closed_count(self) -> int:
+        with _lock:
+            cur = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM trades WHERE status='closed'"
+            )
+            return cur.fetchone()["n"] or 0
+
+    def last_closed_profits(self, symbol: str, n: int = 2) -> list[float]:
+        """Profits de los ultimos N cierres de un simbolo (para el cooldown)."""
+        with _lock:
+            cur = self.conn.execute(
+                """SELECT profit FROM trades WHERE symbol=? AND status='closed'
+                   ORDER BY id DESC LIMIT ?""",
+                (symbol, n),
+            )
+            return [r["profit"] or 0.0 for r in cur.fetchall()]
+
     # ---------- Lecciones (el aprendizaje) ----------
 
     def save_lesson(self, symbol, lesson, from_profit):
@@ -105,6 +136,37 @@ class Memory:
                 "SELECT * FROM lessons ORDER BY id DESC LIMIT ?", (limit,)
             )
             return [dict(r) for r in cur.fetchall()]
+
+    def lessons_for(self, symbol: str, limit_each: int = 6) -> dict:
+        """Lecciones recientes del simbolo + de los demas simbolos, por separado."""
+        with _lock:
+            own = self.conn.execute(
+                "SELECT * FROM lessons WHERE symbol=? ORDER BY id DESC LIMIT ?",
+                (symbol, limit_each),
+            ).fetchall()
+            others = self.conn.execute(
+                "SELECT * FROM lessons WHERE symbol<>? ORDER BY id DESC LIMIT ?",
+                (symbol, limit_each),
+            ).fetchall()
+        return {"symbol": [dict(r) for r in own], "others": [dict(r) for r in others]}
+
+    # ---------- Reglas consolidadas ----------
+
+    def replace_rules(self, rules: list[str]):
+        """Sustituye el set de reglas duraderas por el nuevo (consolidacion)."""
+        with _lock:
+            now = datetime.now().isoformat(timespec="seconds")
+            self.conn.execute("DELETE FROM rules")
+            self.conn.executemany(
+                "INSERT INTO rules (rule, created_at) VALUES (?,?)",
+                [(r, now) for r in rules],
+            )
+            self.conn.commit()
+
+    def get_rules(self) -> list[str]:
+        with _lock:
+            cur = self.conn.execute("SELECT rule FROM rules ORDER BY id")
+            return [r["rule"] for r in cur.fetchall()]
 
     # ---------- Estadisticas ----------
 
@@ -137,3 +199,28 @@ class Memory:
             "total_profit": round(r["total_profit"], 2),
             "per_symbol": per_symbol,
         }
+
+    def confidence_calibration(self) -> list[dict]:
+        """Win rate real por tramo de confianza declarada: para calibrar a la IA."""
+        with _lock:
+            cur = self.conn.execute("""
+                SELECT (MIN(confidence, 99) / 10) * 10 AS bucket,
+                       COUNT(*) AS n,
+                       SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) AS wins,
+                       ROUND(COALESCE(SUM(profit), 0), 2) AS profit
+                FROM trades WHERE status='closed' AND confidence IS NOT NULL
+                GROUP BY bucket ORDER BY bucket
+            """)
+            rows = cur.fetchall()
+        out = []
+        for r in rows:
+            n = r["n"] or 0
+            wins = r["wins"] or 0
+            out.append({
+                "bucket": f"{r['bucket']}-{r['bucket'] + 9}%",
+                "n": n,
+                "wins": wins,
+                "win_rate": round(wins / n * 100, 1) if n else 0,
+                "profit": r["profit"],
+            })
+        return out

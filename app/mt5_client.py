@@ -1,6 +1,7 @@
 """Cliente de MetaTrader 5: conexion, datos de mercado y ejecucion de ordenes reales."""
+import math
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 import numpy as np
@@ -16,6 +17,35 @@ TIMEFRAMES = {
     "H4": mt5.TIMEFRAME_H4,
     "D1": mt5.TIMEFRAME_D1,
 }
+
+# Timeframes superiores que se anaden al snapshot como contexto de tendencia mayor
+HIGHER_TIMEFRAMES = {
+    "M1": ["M15", "H1"],
+    "M5": ["H1", "H4"],
+    "M15": ["H1", "H4"],
+    "M30": ["H4", "D1"],
+    "H1": ["H4", "D1"],
+    "H4": ["D1"],
+    "D1": [],
+}
+
+WEEKDAYS_ES = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+
+
+def _session_utc(now: datetime) -> str:
+    """Sesion de mercado aproximada segun la hora UTC."""
+    if now.weekday() >= 5:
+        return "fin de semana"
+    h = now.hour
+    if 12 <= h < 16:
+        return "Londres+NY (maxima liquidez)"
+    if 7 <= h < 12:
+        return "Londres"
+    if 16 <= h < 21:
+        return "Nueva York"
+    if h == 21:
+        return "cierre de NY (baja liquidez)"
+    return "Asia"
 
 
 class MT5Client:
@@ -54,6 +84,26 @@ class MT5Client:
         mt5.shutdown()
         self.connected = False
 
+    def login_account(self, login: int, password: str, server: str) -> dict:
+        """Login desde la UI: inicializa el terminal si hace falta y entra a la cuenta."""
+        with self.lock:
+            if not self.connected:
+                kwargs = {"login": login, "password": password, "server": server}
+                if config.MT5_PATH:
+                    kwargs["path"] = config.MT5_PATH
+                if not mt5.initialize(**kwargs):
+                    return {"ok": False, "error": str(mt5.last_error())}
+                if mt5.account_info() is None:
+                    return {"ok": False, "error": "MT5 inicializado pero sin cuenta logueada"}
+                missing = [s for s in config.SYMBOLS if not mt5.symbol_select(s, True)]
+                self.connected = True
+                result = {"ok": True, "account": self.account()}
+                if missing:
+                    result["warning"] = f"simbolos no disponibles: {', '.join(missing)}"
+                return result
+
+        return self.switch_account(login, password, server)
+
     def switch_account(self, login: int, password: str, server: str) -> dict:
         """Cambia de cuenta dentro del mismo terminal MT5, sin reiniciar el bot."""
         with self.lock:
@@ -81,6 +131,10 @@ class MT5Client:
 
     def account(self) -> dict:
         a = mt5.account_info()
+        if a is None:
+            # El terminal se cerro o perdio la sesion a mitad de ejecucion
+            self.connected = False
+            raise ConnectionError("MT5 no responde (¿terminal cerrado o sesion perdida?)")
         return {
             "login": a.login,
             "server": a.server,
@@ -91,36 +145,114 @@ class MT5Client:
             "profit": a.profit,
         }
 
-    def candles(self, symbol: str, n: int = 100):
-        tf = TIMEFRAMES.get(config.TIMEFRAME, mt5.TIMEFRAME_M5)
+    def candles(self, symbol: str, n: int = 100, timeframe: str | None = None):
+        tf = TIMEFRAMES.get(timeframe or config.TIMEFRAME, mt5.TIMEFRAME_M5)
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, n)
         if rates is None or len(rates) == 0:
             return None
         return rates
 
     def market_snapshot(self, symbol: str) -> dict | None:
-        """Velas + indicadores calculados, listo para mandarle a la IA."""
-        rates = self.candles(symbol, 100)
-        if rates is None:
+        """Velas + indicadores en varios timeframes, listo para mandarle a la IA."""
+        rates = self.candles(symbol, 120)
+        info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if rates is None or len(rates) < 60 or info is None or tick is None or not tick.bid:
+            return None
+
+        close = rates["close"].astype(float)
+        high = rates["high"].astype(float)
+        low = rates["low"].astype(float)
+        volume = rates["tick_volume"].astype(float)
+        d = info.digits
+
+        atr = round(self._atr(high, low, close, 14), d + 2)
+        spread = tick.ask - tick.bid
+        macd_line, macd_signal, macd_hist = self._macd(close)
+        bb_up, bb_mid, bb_low, bb_pb = self._bollinger(close, 20, 2.0)
+        adx, di_plus, di_minus = self._adx(high, low, close, 14)
+        now_utc = datetime.now(timezone.utc)
+
+        # La vela [-1] se esta formando: niveles y volumen usan velas cerradas
+        hi_50 = float(high[-51:-1].max())
+        lo_50 = float(low[-51:-1].min())
+        avg_vol = float(volume[-22:-2].mean()) if len(volume) >= 22 else 0.0
+
+        return {
+            "symbol": symbol,
+            "timeframe": config.TIMEFRAME,
+            "bar_time": int(rates["time"][-1]),  # uso interno, no se manda a la IA
+            "utc_time": now_utc.strftime("%H:%M"),
+            "weekday": WEEKDAYS_ES[now_utc.weekday()],
+            "session": _session_utc(now_utc),
+            "bid": tick.bid,
+            "ask": tick.ask,
+            "spread_points": int(round(spread / info.point)) if info.point else 0,
+            "spread_vs_atr": round(spread / atr, 3) if atr else None,
+            "price": round(float(close[-1]), d),
+            "change_pct_20_bars": round((close[-1] / close[-21] - 1) * 100, 3),
+            "ema_9": round(self._ema(close, 9), d),
+            "ema_21": round(self._ema(close, 21), d),
+            "ema_50": round(self._ema(close, 50), d),
+            "rsi_14": round(self._rsi(close, 14), 1),
+            "atr_14": atr,
+            "adx_14": round(adx, 1),
+            "di_plus": round(di_plus, 1),
+            "di_minus": round(di_minus, 1),
+            "macd": {
+                "line": round(macd_line, d + 2),
+                "signal": round(macd_signal, d + 2),
+                "hist": round(macd_hist, d + 2),
+            },
+            "bollinger": {
+                "upper": round(bb_up, d),
+                "middle": round(bb_mid, d),
+                "lower": round(bb_low, d),
+                "percent_b": bb_pb,
+            },
+            "high_50_bars": round(hi_50, d),
+            "low_50_bars": round(lo_50, d),
+            "dist_to_high_atr": round((hi_50 - close[-1]) / atr, 2) if atr else None,
+            "dist_to_low_atr": round((close[-1] - lo_50) / atr, 2) if atr else None,
+            "volume_last_vs_avg": round(float(volume[-2]) / avg_vol, 2) if avg_vol else None,
+            "last_10_closes": [round(float(c), d) for c in close[-10:]],
+            "last_5_candles": [
+                {"o": round(float(rates["open"][i]), d), "h": round(float(high[i]), d),
+                 "l": round(float(low[i]), d), "c": round(float(close[i]), d)}
+                for i in range(-5, 0)
+            ],
+            "higher_timeframes": [
+                s for tf in HIGHER_TIMEFRAMES.get(config.TIMEFRAME, [])
+                if (s := self._tf_summary(symbol, tf, d)) is not None
+            ],
+        }
+
+    def _tf_summary(self, symbol: str, tf: str, digits: int) -> dict | None:
+        """Resumen compacto de un timeframe superior para contexto de tendencia."""
+        rates = self.candles(symbol, 80, tf)
+        if rates is None or len(rates) < 55:
             return None
         close = rates["close"].astype(float)
         high = rates["high"].astype(float)
         low = rates["low"].astype(float)
-
-        tick = mt5.symbol_info_tick(symbol)
+        ema21 = self._ema(close, 21)
+        ema50 = self._ema(close, 50)
+        price = float(close[-1])
+        if price > ema21 > ema50:
+            trend = "alcista"
+        elif price < ema21 < ema50:
+            trend = "bajista"
+        else:
+            trend = "lateral/mixta"
         return {
-            "symbol": symbol,
-            "timeframe": config.TIMEFRAME,
-            "bid": tick.bid,
-            "ask": tick.ask,
-            "price": close[-1],
-            "change_pct_20_bars": round((close[-1] / close[-21] - 1) * 100, 3),
-            "ema_9": round(self._ema(close, 9), 5),
-            "ema_21": round(self._ema(close, 21), 5),
-            "ema_50": round(self._ema(close, 50), 5),
+            "timeframe": tf,
+            "trend": trend,
+            "ema_21": round(ema21, digits),
+            "ema_50": round(ema50, digits),
             "rsi_14": round(self._rsi(close, 14), 1),
-            "atr_14": self._atr(high, low, close, 14),
-            "last_10_closes": [round(c, 5) for c in close[-10:]],
+            "change_pct_20_bars": round((price / close[-21] - 1) * 100, 3),
+            "high_50_bars": round(float(high[-51:-1].max()), digits),
+            "low_50_bars": round(float(low[-51:-1].min()), digits),
         }
 
     @staticmethod
@@ -132,16 +264,74 @@ class MT5Client:
         return float(ema)
 
     @staticmethod
+    def _ema_series(values, period):
+        k = 2 / (period + 1)
+        out = np.empty(len(values))
+        out[0] = values[0]
+        for i in range(1, len(values)):
+            out[i] = values[i] * k + out[i - 1] * (1 - k)
+        return out
+
+    def _macd(self, close):
+        """MACD 12/26/9: linea, senal e histograma."""
+        macd_line = self._ema_series(close, 12) - self._ema_series(close, 26)
+        signal = self._ema_series(macd_line, 9)
+        return float(macd_line[-1]), float(signal[-1]), float(macd_line[-1] - signal[-1])
+
+    @staticmethod
+    def _bollinger(close, period=20, mult=2.0):
+        window = close[-period:]
+        mid = float(window.mean())
+        std = float(window.std())
+        upper, lower = mid + mult * std, mid - mult * std
+        pb = round((float(close[-1]) - lower) / (upper - lower), 2) if upper > lower else 0.5
+        return upper, mid, lower, pb
+
+    @staticmethod
     def _rsi(close, period=14):
         deltas = np.diff(close)
+        if len(deltas) < period:
+            return 50.0
         gains = np.clip(deltas, 0, None)
         losses = np.clip(-deltas, 0, None)
-        avg_gain = gains[-period:].mean()
-        avg_loss = losses[-period:].mean()
+        # Suavizado de Wilder: mismo valor que muestra el RSI del terminal MT5
+        avg_gain = gains[:period].mean()
+        avg_loss = losses[:period].mean()
+        for g, l in zip(gains[period:], losses[period:]):
+            avg_gain = (avg_gain * (period - 1) + g) / period
+            avg_loss = (avg_loss * (period - 1) + l) / period
         if avg_loss == 0:
             return 100.0
-        rs = avg_gain / avg_loss
-        return float(100 - 100 / (1 + rs))
+        return float(100 - 100 / (1 + avg_gain / avg_loss))
+
+    @staticmethod
+    def _wilder_series(values, period):
+        alpha = 1.0 / period
+        out = np.empty(len(values))
+        out[0] = values[0]
+        for i in range(1, len(values)):
+            out[i] = out[i - 1] + alpha * (values[i] - out[i - 1])
+        return out
+
+    def _adx(self, high, low, close, period=14):
+        """ADX de Wilder + DI+/DI-: fuerza y direccion de la tendencia."""
+        up = high[1:] - high[:-1]
+        down = low[:-1] - low[1:]
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+        tr = np.maximum(
+            high[1:] - low[1:],
+            np.maximum(abs(high[1:] - close[:-1]), abs(low[1:] - close[:-1])),
+        )
+        atr_s = self._wilder_series(tr, period)
+        atr_s[atr_s == 0] = 1e-12
+        di_plus = 100 * self._wilder_series(plus_dm, period) / atr_s
+        di_minus = 100 * self._wilder_series(minus_dm, period) / atr_s
+        di_sum = di_plus + di_minus
+        di_sum[di_sum == 0] = 1e-12
+        dx = 100 * np.abs(di_plus - di_minus) / di_sum
+        adx = self._wilder_series(dx, period)
+        return float(adx[-1]), float(di_plus[-1]), float(di_minus[-1])
 
     @staticmethod
     def _atr(high, low, close, period=14):
@@ -199,10 +389,12 @@ class MT5Client:
         value_per_unit = info.trade_tick_value / info.trade_tick_size
         lot = risk_amount / (sl_distance * value_per_unit)
 
-        # Normalizar al step del broker
-        step = info.volume_step
-        lot = max(info.volume_min, min(info.volume_max, round(lot / step) * step))
-        return round(lot, 2)
+        # Normalizar al step del broker, hacia abajo: nunca arriesgar de mas.
+        # round(lot, 8) solo limpia ruido de coma flotante sin romper el step.
+        step = info.volume_step or 0.01
+        lot = math.floor(lot / step) * step
+        lot = max(info.volume_min, min(info.volume_max, lot))
+        return round(lot, 8)
 
     def open_trade(self, symbol: str, direction: str, sl_distance: float,
                    tp_distance: float, comment: str = "") -> dict:
@@ -260,12 +452,37 @@ class MT5Client:
             "tp": request["tp"],
         }
 
+    def modify_position_sl(self, ticket: int, new_sl: float) -> dict:
+        """Mueve el stop loss de una posicion (p.ej. a break-even)."""
+        pos_list = mt5.positions_get(ticket=ticket)
+        if not pos_list:
+            return {"ok": False, "error": "posicion no encontrada"}
+        p = pos_list[0]
+        info = mt5.symbol_info(p.symbol)
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": p.symbol,
+            "sl": round(new_sl, info.digits),
+            "tp": p.tp,
+            "magic": config.MAGIC_NUMBER,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            err = (str(mt5.last_error()) if result is None
+                   else f"retcode={result.retcode} {result.comment}")
+            return {"ok": False, "error": err}
+        return {"ok": True, "sl": request["sl"]}
+
     def close_position(self, ticket: int) -> dict:
         pos_list = mt5.positions_get(ticket=ticket)
         if not pos_list:
             return {"ok": False, "error": "posicion no encontrada"}
         p = pos_list[0]
         tick = mt5.symbol_info_tick(p.symbol)
+        if tick is None or not tick.bid:
+            return {"ok": False,
+                    "error": f"sin precio para {p.symbol} (¿mercado cerrado?)"}
 
         if p.type == mt5.POSITION_TYPE_BUY:
             order_type = mt5.ORDER_TYPE_SELL

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Historial{% endblock %}
+{% block heading %}Historial de trades{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <div class="card full">
+    <h2>Rendimiento por símbolo</h2>
+    <table>
+      <thead><tr><th>Símbolo</th><th>Trades</th><th>Ganados</th><th>Win rate</th><th>Profit</th></tr></thead>
+      <tbody id="perSymbol"><tr><td colspan="5" class="empty">Sin trades cerrados aún</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card full">
+    <h2>Todos los trades <span class="h-link" id="histCount"></span></h2>
+    <div class="form-row">
+      <select id="fSymbol"><option value="">Todos los símbolos</option></select>
+      <select id="fStatus">
+        <option value="">Abiertos y cerrados</option>
+        <option value="open">Solo abiertos</option>
+        <option value="closed">Solo cerrados</option>
+      </select>
+      <select id="fResult">
+        <option value="">Cualquier resultado</option>
+        <option value="win">Solo ganadores</option>
+        <option value="loss">Solo perdedores</option>
+      </select>
+      <input id="fSearch" type="text" placeholder="Buscar en la razón de la IA…" style="flex:1;min-width:180px;">
+    </div>
+    <table>
+      <thead><tr><th>Abierto</th><th>Símbolo</th><th>Dir</th><th>Lotes</th><th>Entrada</th><th>SL</th><th>TP</th><th>Conf.</th><th>Razón de la IA</th><th>Estado</th><th>Profit</th><th></th></tr></thead>
+      <tbody id="history"><tr><td colspan="12" class="empty">Cargando…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let trades = [];
+let symbolsSeen = '';
+
+async function loadHistory() {
+  try {
+    trades = await (await fetch('/api/history?limit=300')).json();
+    fillSymbolFilter();
+    renderHistory();
+  } catch (e) { /* servidor arrancando */ }
+}
+
+function fillSymbolFilter() {
+  const syms = [...new Set(trades.map(t => t.symbol))].sort();
+  const key = syms.join(',');
+  if (key === symbolsSeen) return;
+  symbolsSeen = key;
+  const sel = document.getElementById('fSymbol');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Todos los símbolos</option>' +
+    syms.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  sel.value = current;
+}
+
+function renderHistory() {
+  const sym = document.getElementById('fSymbol').value;
+  const status = document.getElementById('fStatus').value;
+  const result = document.getElementById('fResult').value;
+  const q = document.getElementById('fSearch').value.trim().toLowerCase();
+
+  const rows = trades.filter(t =>
+    (!sym || t.symbol === sym) &&
+    (!status || t.status === status) &&
+    (result !== 'win' || (t.profit != null && t.profit > 0)) &&
+    (result !== 'loss' || (t.profit != null && t.profit <= 0)) &&
+    (!q || String(t.reason || '').toLowerCase().includes(q))
+  );
+
+  document.getElementById('histCount').textContent =
+    `${rows.length} de ${trades.length} trades`;
+
+  document.getElementById('history').innerHTML = rows.length ? rows.map(t => `
+    <tr><td style="white-space:nowrap;">${esc((t.opened_at || '').replace('T', ' '))}</td>
+      <td class="sym-cell">${esc(t.symbol)}${catTag(t.symbol)}</td>
+      <td><span class="badge ${esc(t.direction)}">${esc(t.direction).toUpperCase()}</span></td>
+      <td>${t.volume}</td><td>${t.entry_price}</td><td>${t.sl}</td><td>${t.tp}</td>
+      <td>${t.confidence}%</td>
+      <td style="max-width:380px;">${esc(t.reason)}</td>
+      <td>${t.status === 'open' ? '<span class="yellow">abierto</span>' : 'cerrado'}</td>
+      <td class="${pnlClass(t.profit)}">${t.profit == null ? '—' : fmt(t.profit)}</td>
+      <td>${t.status === 'open' && t.position_id
+            ? `<button class="danger btn-mini" onclick="closeOne(${t.position_id}, '${esc(t.symbol)}')">✖ Cerrar</button>`
+            : ''}</td></tr>`).join('')
+    : '<tr><td colspan="12" class="empty">Ningún trade coincide con los filtros</td></tr>';
+}
+
+['fSymbol', 'fStatus', 'fResult'].forEach(id =>
+  document.getElementById(id).addEventListener('change', renderHistory));
+document.getElementById('fSearch').addEventListener('input', renderHistory);
+
+window.renderPage = function (d) {
+  const per = d.stats.per_symbol || [];
+  document.getElementById('perSymbol').innerHTML = per.length ? per.map(s => `
+    <tr><td class="sym-cell">${esc(s.symbol)}${catTag(s.symbol)}</td>
+      <td>${s.n}</td><td>${s.wins}</td>
+      <td>${s.n ? Math.round(s.wins / s.n * 100) : 0}%</td>
+      <td class="${pnlClass(s.profit)}">${fmt(s.profit)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty">Sin trades cerrados aún</td></tr>';
+};
+if (lastData) renderPage(lastData);
+
+loadHistory();
+setInterval(loadHistory, 5000);
+</script>
+{% endblock %}

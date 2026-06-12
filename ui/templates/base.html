@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}OmniTrade AI{% endblock %} — OmniTrade AI</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>Omni<span>Trade</span> AI</h1>
+        <div class="tagline">MT5 + IA · Multi-mercado</div>
+      </div>
+    </div>
+
+    <nav>
+      <a class="nav-link {{ 'active' if page == 'dashboard' }}" href="/"><span class="icon">📊</span> Dashboard</a>
+      <a class="nav-link {{ 'active' if page == 'posiciones' }}" href="/posiciones"><span class="icon">📈</span> Posiciones <span class="nav-badge" id="badgePos"></span></a>
+      <a class="nav-link {{ 'active' if page == 'historial' }}" href="/historial"><span class="icon">🗂️</span> Historial</a>
+      <a class="nav-link {{ 'active' if page == 'ia' }}" href="/ia"><span class="icon">🧠</span> Mente IA</a>
+      <a class="nav-link {{ 'active' if page == 'pensamientos' }}" href="/pensamientos"><span class="icon">💭</span> Pensamientos</a>
+      <a class="nav-link {{ 'active' if page == 'noticias' }}" href="/noticias"><span class="icon">📰</span> Noticias</a>
+      <a class="nav-link {{ 'active' if page == 'logs' }}" href="/logs"><span class="icon">📜</span> Logs <span class="nav-badge" id="badgeLog"></span></a>
+      <a class="nav-link {{ 'active' if page == 'ajustes' }}" href="/ajustes"><span class="icon">⚙️</span> Ajustes</a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="row"><span class="icon">🔐</span><span id="sideAccount">—</span></div>
+      <div class="row"><span class="icon">🤖</span><span>Bot autónomo con memoria</span></div>
+      {% if auth_enabled %}<div class="row"><span class="icon">🚪</span><a href="/logout">Cerrar sesión del panel</a></div>{% endif %}
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <span class="page-title">{% block heading %}{% endblock %}</span>
+      <span class="status-pill"><span id="statusDot" class="status-dot"></span><span id="statusText">conectando…</span></span>
+      <span class="mode-chip" id="modeChip">solo análisis</span>
+      <span class="spacer"></span>
+      <button id="btnPause" class="primary" onclick="togglePause()"
+              title="En pausa el bot no abre trades nuevos, pero sigue analizando y gestionando las posiciones abiertas">⏸ Pausar nuevas</button>
+      <button class="danger" onclick="closeAll()">✖ Cerrar todo</button>
+    </div>
+
+    <div id="pausedBanner" class="banner">
+      ⏸ Modo gestión: el bot <b>no abrirá trades nuevos</b>. La IA sigue vigilando las posiciones
+      abiertas y las cerrará si detecta una señal contraria fuerte.
+    </div>
+    <div id="dailyBanner" class="banner danger">
+      🛑 Límite de pérdida diaria alcanzado: el bot no abrirá más trades hasta mañana.
+    </div>
+
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

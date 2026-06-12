@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block heading %}Logs del servidor{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="tabs" id="kindTabs" style="margin-bottom:10px;">
+    <span class="tab active" data-kind="all">Todo <span class="count" id="c-all"></span></span>
+    <span class="tab" data-kind="think">🟡 Pensamiento <span class="count" id="c-think"></span></span>
+    <span class="tab" data-kind="decision">🔵 Decisiones <span class="count" id="c-decision"></span></span>
+    <span class="tab" data-kind="trade">🟢 Trades <span class="count" id="c-trade"></span></span>
+    <span class="tab" data-kind="learn">🟣 Lecciones <span class="count" id="c-learn"></span></span>
+    <span class="tab" data-kind="info">⚪ Info <span class="count" id="c-info"></span></span>
+    <span class="tab" data-kind="error">🔴 Errores <span class="count" id="c-error"></span></span>
+  </div>
+  <div class="form-row" style="margin-bottom:10px;">
+    <input id="logSearch" type="text" placeholder="Buscar en los mensajes…" style="flex:1;min-width:200px;">
+    <button id="btnFreeze" onclick="toggleFreeze()">⏸ Congelar vista</button>
+    <button onclick="downloadLog()">⬇ Descargar .txt</button>
+    <span class="hint" id="logInfo"></span>
+  </div>
+  <div id="logBox" class="log-box" style="max-height:calc(100vh - 290px);min-height:300px;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let kindFilter = 'all';
+let frozen = false;
+let lastEvents = [];
+
+document.getElementById('kindTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  kindFilter = tab.dataset.kind;
+  document.querySelectorAll('#kindTabs .tab').forEach(t => t.classList.toggle('active', t === tab));
+  renderLog();
+});
+document.getElementById('logSearch').addEventListener('input', renderLog);
+
+function toggleFreeze() {
+  frozen = !frozen;
+  const b = document.getElementById('btnFreeze');
+  b.textContent = frozen ? '▶ Reanudar vista' : '⏸ Congelar vista';
+  b.classList.toggle('primary', frozen);
+  if (!frozen) renderLog();
+}
+
+function renderLog() {
+  const q = document.getElementById('logSearch').value.trim().toLowerCase();
+  const rows = lastEvents.filter(e =>
+    (kindFilter === 'all' || e.kind === kindFilter) &&
+    (!q || e.message.toLowerCase().includes(q))
+  );
+  document.getElementById('logBox').innerHTML =
+    rows.map(logLine).join('') || '<div class="empty">Sin eventos que coincidan</div>';
+  document.getElementById('logInfo').textContent =
+    `${rows.length} de ${lastEvents.length} eventos` + (frozen ? ' · vista congelada' : '');
+}
+
+function downloadLog() {
+  const text = [...lastEvents].reverse()
+    .map(e => `[${e.time}] [${(e.kind + '        ').slice(0, 8).trim().toUpperCase()}] ${e.message}`)
+    .join('\n');
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const now = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  a.download = `omnitrade-log-${now}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+window.renderPage = function (d) {
+  lastEvents = d.events;
+  // Contadores por tipo (siempre actualizados, incluso con la vista congelada)
+  const counts = { all: d.events.length };
+  for (const e of d.events) counts[e.kind] = (counts[e.kind] || 0) + 1;
+  for (const k of ['all', 'think', 'decision', 'trade', 'learn', 'info', 'error']) {
+    const el = document.getElementById('c-' + k);
+    if (el) el.textContent = counts[k] ? `(${counts[k]})` : '';
+  }
+  if (!frozen) renderLog();
+};
+if (lastData) renderPage(lastData);
+</script>
+{% endblock %}

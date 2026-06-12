@@ -11,6 +11,10 @@ accounts.json
 # Databases
 bot_memory.db
 
+# Logs
+logs/
+*.log
+
 # Virtual environments
 venv/
 .venv/

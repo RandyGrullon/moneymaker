@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Posiciones{% endblock %}
+{% block heading %}Posiciones{% endblock %}
+
+{% block content %}
+<div class="tabs" id="marketTabs">
+  <span class="tab active" data-cat="all">Todos los mercados</span>
+  <span class="tab" data-cat="forex">💱 Forex</span>
+  <span class="tab" data-cat="gold">🥇 Oro / Metales</span>
+  <span class="tab" data-cat="crypto">₿ Cripto</span>
+  <span class="tab" data-cat="stock">📊 Acciones / Índices</span>
+</div>
+
+<div class="card">
+  <h2>Posiciones abiertas del bot <span class="h-link" id="posSummary"></span></h2>
+  <table>
+    <thead><tr><th>Ticket</th><th>Símbolo</th><th>Dir</th><th>Lotes</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Profit</th><th></th></tr></thead>
+    <tbody id="positions"><tr><td colspan="10" class="empty">Sin posiciones</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Qué opina la IA de cada símbolo ahora mismo</h2>
+  <div id="decisions" class="empty">—</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let activeCat = 'all';
+const inCat = sym => activeCat === 'all' || categorize(sym) === activeCat;
+
+document.getElementById('marketTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  activeCat = tab.dataset.cat;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+  if (lastData) renderPage(lastData);
+});
+
+window.renderPage = function (d) {
+  const pos = d.positions.filter(p => inCat(p.symbol));
+  document.getElementById('positions').innerHTML = pos.length
+    ? pos.map(p => positionRow(p)).join('')
+    : '<tr><td colspan="10" class="empty">Sin posiciones' + (activeCat !== 'all' ? ' en este mercado' : '') + '</td></tr>';
+
+  const total = pos.reduce((s, p) => s + (p.profit || 0), 0);
+  document.getElementById('posSummary').innerHTML = pos.length
+    ? `${pos.length} abiertas · P&amp;L flotante <span class="${pnlClass(total)}">${fmt(total)}</span>` : '';
+
+  const decs = Object.entries(d.last_decisions).filter(([sym]) => inCat(sym));
+  document.getElementById('decisions').innerHTML = decs.length
+    ? decs.map(([sym, dec]) => decisionCard(sym, dec, true)).join('')
+    : '<div class="empty">Esperando primer análisis…</div>';
+};
+if (lastData) renderPage(lastData);
+</script>
+{% endblock %}

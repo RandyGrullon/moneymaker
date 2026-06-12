@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Noticias{% endblock %}
+{% block heading %}Noticias en vivo{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Qué influye en cada símbolo AHORA <span class="h-link" id="newsStatus"></span></h2>
+  <div class="hint" style="margin-bottom:10px;">
+    Esto es exactamente lo que el bot le inyecta a la IA en cada decisión: titulares relevantes
+    para las divisas del símbolo + eventos del calendario económico. Si hay un dato de
+    <b>alto impacto</b> inminente, las entradas nuevas se bloquean automáticamente.
+  </div>
+  <div id="influence" class="grid-influence"><div class="empty">Cargando…</div></div>
+</div>
+
+<div class="card">
+  <h2>Próximos eventos económicos (48 h) <span class="h-link" id="calCount"></span></h2>
+  <table>
+    <thead><tr><th>Cuándo</th><th>Hora local</th><th>Divisa</th><th>Evento</th><th>Impacto</th><th>Previsión</th><th>Previo</th></tr></thead>
+    <tbody id="calendar"><tr><td colspan="7" class="empty">Cargando calendario…</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Flujo de titulares <span class="h-link" id="feedInfo"></span></h2>
+  <div class="tabs" id="catTabs">
+    <span class="tab active" data-cat="all">Todo</span>
+    <span class="tab" data-cat="forex">💱 Forex</span>
+    <span class="tab" data-cat="mercados">📈 Mercados</span>
+    <span class="tab" data-cat="mundo">🌍 Mundo</span>
+    <span class="tab" data-cat="bancos_centrales">🏛 B. centrales</span>
+    <span class="tab" data-cat="cripto">₿ Cripto</span>
+    <span class="tab" data-cat="materias_primas">🛢 Mat. primas</span>
+    <span class="tab" data-cat="extra">➕ Extra</span>
+  </div>
+  <div class="form-row" style="margin-bottom:10px;">
+    <select id="nSymbol"><option value="">Relevante para… (todos)</option></select>
+    <input id="nSearch" type="text" placeholder="Buscar en titulares…" style="flex:1;min-width:200px;">
+    <button id="btnFreezeN" onclick="toggleFreezeN()">⏸ Congelar vista</button>
+  </div>
+  <div id="newsList"><div class="empty">Cargando titulares…</div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let newsData = null;
+let catFilter = 'all';
+let frozenN = false;
+
+const CAT_LABEL = {
+  forex: 'FOREX', mercados: 'MERCADOS', mundo: 'MUNDO',
+  bancos_centrales: 'B.CENTRAL', cripto: 'CRIPTO', materias_primas: 'MAT.PRIMAS', extra: 'EXTRA',
+};
+const IMPACT = {
+  High: ['ALTO', 'impact-high'], Medium: ['MEDIO', 'impact-medium'],
+  Low: ['BAJO', 'impact-low'], Holiday: ['FESTIVO', 'impact-low'],
+};
+
+document.getElementById('catTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab'); if (!tab) return;
+  catFilter = tab.dataset.cat;
+  document.querySelectorAll('#catTabs .tab').forEach(t => t.classList.toggle('active', t === tab));
+  renderNews();
+});
+document.getElementById('nSymbol').addEventListener('change', renderNews);
+document.getElementById('nSearch').addEventListener('input', renderNews);
+
+function toggleFreezeN() {
+  frozenN = !frozenN;
+  const b = document.getElementById('btnFreezeN');
+  b.textContent = frozenN ? '▶ Reanudar vista' : '⏸ Congelar vista';
+  b.classList.toggle('primary', frozenN);
+  if (!frozenN) renderNews();
+}
+
+const ageTxt = m => m < 60 ? `hace ${m}m` : m < 1440 ? `hace ${Math.floor(m / 60)}h ${m % 60}m` : `hace ${Math.floor(m / 1440)}d`;
+const inTxt = m => m < 0 ? `hace ${-m}m` : m < 60 ? `en ${m}m` : `en ${Math.floor(m / 60)}h ${m % 60}m`;
+const localTime = iso => { try { return new Date(iso).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return iso; } };
+
+function renderInfluence(d) {
+  const inf = d.influence || {};
+  const syms = Object.keys(inf);
+  document.getElementById('influence').innerHTML = syms.length ? syms.map(sym => {
+    const x = inf[sym];
+    const blocked = x.blocked_by;
+    return `<div class="influence-card">
+      <div style="margin-bottom:6px;">
+        <span class="sym" style="font-weight:700;">${esc(sym)}</span>${catTag(sym)}
+        ${blocked
+          ? `<span class="badge sell" title="No se abren trades nuevos en la ventana del evento">🚫 BLOQUEADO: ${esc(blocked.currency)} ${esc(blocked.title)} (${inTxt(blocked.minutes)})</span>`
+          : '<span class="badge buy">✓ sin bloqueos</span>'}
+      </div>
+      ${(x.upcoming_events || []).map(e => `<div class="news-line warn">📅 ${esc(e)}</div>`).join('')}
+      ${(x.recent_events || []).map(e => `<div class="news-line warn">📅 ${esc(e)}</div>`).join('')}
+      ${(x.headlines || []).map(h => `<div class="news-line">• ${esc(h)}</div>`).join('') || '<div class="empty">Sin titulares relevantes todavía</div>'}
+    </div>`;
+  }).join('') : '<div class="empty">Sin símbolos configurados</div>';
+}
+
+function renderCalendar(d) {
+  const cal = d.calendar || [];
+  document.getElementById('calCount').textContent = cal.length ? `${cal.length} eventos` : '';
+  document.getElementById('calendar').innerHTML = cal.length ? cal.map(ev => {
+    const [label, cls] = IMPACT[ev.impact] || [esc(ev.impact), 'impact-low'];
+    return `<tr class="${ev.impact === 'High' ? 'row-high' : ''}">
+      <td style="white-space:nowrap;" class="${ev.in_min <= 60 && ev.in_min >= -30 ? 'yellow' : ''}">${inTxt(ev.in_min)}</td>
+      <td style="white-space:nowrap;">${localTime(ev.time_utc)}</td>
+      <td><b>${esc(ev.currency)}</b></td>
+      <td>${esc(ev.title)}</td>
+      <td><span class="impact ${cls}">${label}</span></td>
+      <td>${esc(ev.forecast) || '—'}</td><td>${esc(ev.previous) || '—'}</td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="empty">Sin eventos próximos (o calendario aún cargando)</td></tr>';
+}
+
+function renderNews() {
+  if (!newsData) return;
+  const d = newsData;
+  const sym = document.getElementById('nSymbol').value;
+  const q = document.getElementById('nSearch').value.trim().toLowerCase();
+  // Relevancia por símbolo: el servidor etiqueta cada titular con divisas/activos
+  const symTags = sym ? (window._symTagCache || {})[sym] : null;
+
+  let rows = d.items || [];
+  if (catFilter !== 'all') rows = rows.filter(i => i.category === catFilter);
+  if (symTags) rows = rows.filter(i => (i.tags || []).some(t => symTags.has(t)));
+  if (q) rows = rows.filter(i => (i.title + ' ' + i.summary + ' ' + i.source).toLowerCase().includes(q));
+
+  document.getElementById('newsList').innerHTML = rows.length ? rows.map(i => `
+    <div class="news-item">
+      <div class="news-meta">
+        <span class="t">${ageTxt(i.age_min)}</span>
+        <span class="cat-chip">${CAT_LABEL[i.category] || esc(i.category)}</span>
+        <span class="src">${esc(i.source)}</span>
+        ${(i.tags || []).map(t => `<span class="tag-mini">${esc(t)}</span>`).join('')}
+      </div>
+      <a href="${esc(i.link)}" target="_blank" rel="noopener">${esc(i.title)}</a>
+      ${i.summary ? `<div class="news-summary">${esc(i.summary)}</div>` : ''}
+    </div>`).join('') : '<div class="empty">Sin titulares que coincidan</div>';
+
+  document.getElementById('feedInfo').textContent =
+    `${rows.length} de ${(d.items || []).length} titulares` + (frozenN ? ' · vista congelada' : '');
+}
+
+function fillSymbolFilter(d) {
+  const syms = Object.keys(d.influence || {});
+  const sel = document.getElementById('nSymbol');
+  if (sel.options.length - 1 !== syms.length) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Relevante para… (todos)</option>' +
+      syms.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    sel.value = cur;
+  }
+  // Tags por símbolo para filtrar client-side (mismas reglas que el servidor)
+  window._symTagCache = {};
+  for (const s of syms) {
+    const u = s.toUpperCase().replace(/[._\-]/g, '');
+    const tags = new Set();
+    if (u.length >= 6 && /^[A-Z]{6}/.test(u)) { tags.add(u.slice(0, 3)); tags.add(u.slice(3, 6)); }
+    if (/^(BTC|ETH|XRP|SOL|ADA|DOG|BNB|LTC)/.test(u)) { tags.add('CRYPTO'); tags.add(u.slice(0, 3)); }
+    if (/^(US30|US100|US500|NAS100|SPX500)/.test(u)) tags.add('USD');
+    if (/^(GER40|DAX40)/.test(u)) tags.add('EUR');
+    if (/^UK100/.test(u)) tags.add('GBP');
+    if (/^GOLD/.test(u)) { tags.add('XAU'); tags.add('USD'); }
+    if (/^SILVER/.test(u)) { tags.add('XAG'); tags.add('USD'); }
+    if (/^(USOIL|WTI|UKOIL|BRENT)/.test(u)) { tags.add('OIL'); if (/^(USOIL|WTI)/.test(u)) tags.add('USD'); }
+    window._symTagCache[s] = tags;
+  }
+}
+
+async function loadNews() {
+  try {
+    const d = await (await fetch('/api/news?limit=120')).json();
+    newsData = d;
+    if (!d.enabled) {
+      document.getElementById('newsStatus').textContent = 'desactivado (NEWS_ENABLED=false)';
+      document.getElementById('influence').innerHTML =
+        '<div class="empty">El módulo de noticias está desactivado en el .env</div>';
+      return;
+    }
+    const st = d.status || {};
+    document.getElementById('newsStatus').textContent =
+      `${st.sources || 0} fuentes · ${st.items || 0} titulares · ${st.calendar_events || 0} eventos` +
+      (st.sources_failing ? ` · ${st.sources_failing} fuente(s) fallando` : '');
+    fillSymbolFilter(d);
+    renderInfluence(d);
+    renderCalendar(d);
+    if (!frozenN) renderNews();
+  } catch (e) { /* servidor arrancando */ }
+}
+loadNews();
+setInterval(loadNews, 10000);
+</script>
+{% endblock %}

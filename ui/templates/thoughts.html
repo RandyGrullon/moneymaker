@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Pensamientos{% endblock %}
+{% block heading %}Pensamientos de la IA{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="hint" style="margin-bottom:12px;">
+    Registro completo y sin filtros de <b>cada llamada a la IA</b>: el prompt exacto que recibió,
+    su análisis paso a paso, su respuesta cruda, cuánto tardó y qué hizo el bot con esa decisión.
+  </div>
+
+  <div class="tabs" id="phaseTabs">
+    <span class="tab active" data-phase="all">Todo <span class="count" id="tc-all"></span></span>
+    <span class="tab" data-phase="decision">🔵 Decisiones <span class="count" id="tc-decision"></span></span>
+    <span class="tab" data-phase="gestion">🟡 Gestión <span class="count" id="tc-gestion"></span></span>
+    <span class="tab" data-phase="leccion">🟣 Lecciones <span class="count" id="tc-leccion"></span></span>
+    <span class="tab" data-phase="consolidacion">🟢 Consolidación <span class="count" id="tc-consolidacion"></span></span>
+  </div>
+
+  <div class="form-row" style="margin-bottom:10px;">
+    <select id="tSymbol"><option value="">Todos los símbolos</option></select>
+    <input id="tSearch" type="text" placeholder="Buscar en análisis, prompts y respuestas…" style="flex:1;min-width:220px;">
+    <button onclick="expandAll(true)">⤵ Expandir</button>
+    <button onclick="expandAll(false)">⤴ Plegar</button>
+    <button id="btnFreezeT" onclick="toggleFreezeT()">⏸ Congelar vista</button>
+    <span class="hint" id="tInfo"></span>
+  </div>
+
+  <div id="thoughtList"><div class="empty">Cargando…</div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let phaseFilter = 'all';
+let thoughts = [];
+let frozenT = false;
+let symbolsSeen = '';
+const expanded = new Set();
+
+const PHASE_LABEL = { decision: 'decisión', gestion: 'gestión', leccion: 'lección', consolidacion: 'consolidación' };
+const ACTION_BADGE = { buy: 'buy', sell: 'sell', hold: 'hold', close: 'sell', breakeven: 'hold' };
+
+document.getElementById('phaseTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.tab');
+  if (!tab) return;
+  phaseFilter = tab.dataset.phase;
+  document.querySelectorAll('#phaseTabs .tab').forEach(t => t.classList.toggle('active', t === tab));
+  renderThoughts();
+});
+document.getElementById('tSymbol').addEventListener('change', renderThoughts);
+document.getElementById('tSearch').addEventListener('input', renderThoughts);
+
+function toggleFreezeT() {
+  frozenT = !frozenT;
+  const b = document.getElementById('btnFreezeT');
+  b.textContent = frozenT ? '▶ Reanudar vista' : '⏸ Congelar vista';
+  b.classList.toggle('primary', frozenT);
+  if (!frozenT) renderThoughts();
+}
+
+function toggleThought(id) {
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  const el = document.querySelector(`.thought[data-id="${id}"]`);
+  if (el) el.classList.toggle('open', expanded.has(id));
+}
+
+function expandAll(open) {
+  if (!open) expanded.clear();
+  document.querySelectorAll('.thought').forEach(el => {
+    if (open) expanded.add(Number(el.dataset.id));
+    el.classList.toggle('open', open);
+  });
+}
+
+function thoughtCard(t) {
+  const p = t.parsed || {};
+  const action = String(p.action || '').toLowerCase();
+  const analysis = (p.analysis && typeof p.analysis === 'object') ? p.analysis : {};
+  const badge = action
+    ? `<span class="badge ${ACTION_BADGE[action] || 'hold'}">${esc(action).toUpperCase()}</span>` +
+      (p.confidence != null ? ` <span class="blue">${p.confidence}%</span>` : '')
+    : '';
+  const lesson = p.lesson ? `<div class="a-step"><b>lección:</b> ${esc(p.lesson)}</div>` : '';
+  const rules = Array.isArray(p.rules)
+    ? p.rules.map(r => `<div class="a-step"><b>regla:</b> ${esc(r)}</div>`).join('') : '';
+  return `<div class="thought ${expanded.has(t.id) ? 'open' : ''}" data-id="${t.id}">
+    <div class="thought-head" onclick="toggleThought(${t.id})">
+      <span class="t">${esc(t.time)}</span>
+      <span class="phase-chip ph-${esc(t.phase)}">${PHASE_LABEL[t.phase] || esc(t.phase)}</span>
+      ${t.symbol ? `<span class="sym">${esc(t.symbol)}</span>${catTag(t.symbol)}` : ''}
+      ${badge}
+      ${t.outcome ? `<span class="thought-outcome">→ ${esc(t.outcome)}</span>` : ''}
+      <span class="meta">${esc(t.model)} · ${t.latency_s}s</span>
+      <span class="chev">▸</span>
+    </div>
+    <div class="thought-body">
+      ${t.error ? `<div class="thought-error">⚠ ${esc(t.error)}</div>` : ''}
+      ${Object.entries(analysis).map(([k, v]) =>
+        `<div class="a-step"><b>${esc(k.replace(/_/g, ' '))}:</b> ${esc(v)}</div>`).join('')}
+      ${lesson}${rules}
+      ${p.reason ? `<div class="a-step"><b>conclusión:</b> ${esc(p.reason)}</div>` : ''}
+      <details><summary>📨 Prompt completo enviado a la IA</summary>
+        <pre>=== SYSTEM ===\n${esc(t.system_prompt)}\n\n=== USER ===\n${esc(t.user_prompt)}</pre></details>
+      <details><summary>📩 Respuesta cruda del modelo</summary>
+        <pre>${esc(t.raw_response || '(vacía)')}</pre></details>
+    </div>
+  </div>`;
+}
+
+function renderThoughts() {
+  const counts = { all: thoughts.length };
+  for (const t of thoughts) counts[t.phase] = (counts[t.phase] || 0) + 1;
+  for (const k of ['all', 'decision', 'gestion', 'leccion', 'consolidacion']) {
+    const el = document.getElementById('tc-' + k);
+    if (el) el.textContent = counts[k] ? `(${counts[k]})` : '';
+  }
+
+  const sym = document.getElementById('tSymbol').value;
+  const q = document.getElementById('tSearch').value.trim().toLowerCase();
+  const rows = thoughts.filter(t =>
+    (phaseFilter === 'all' || t.phase === phaseFilter) &&
+    (!sym || t.symbol === sym) &&
+    (!q || JSON.stringify(t).toLowerCase().includes(q))
+  );
+  document.getElementById('thoughtList').innerHTML =
+    rows.map(thoughtCard).join('') ||
+    '<div class="empty">Aún no hay pensamientos que coincidan: aparecerán con la próxima consulta a la IA.</div>';
+  document.getElementById('tInfo').textContent =
+    `${rows.length} de ${thoughts.length} llamadas` + (frozenT ? ' · vista congelada' : '');
+}
+
+function fillSymbols() {
+  const syms = [...new Set(thoughts.map(t => t.symbol).filter(Boolean))].sort();
+  const key = syms.join(',');
+  if (key === symbolsSeen) return;
+  symbolsSeen = key;
+  const sel = document.getElementById('tSymbol');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Todos los símbolos</option>' +
+    syms.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  sel.value = cur;
+}
+
+async function loadThoughts() {
+  try {
+    thoughts = await (await fetch('/api/thoughts?limit=120')).json();
+    fillSymbols();
+    if (!frozenT) renderThoughts();
+  } catch (e) { /* servidor arrancando */ }
+}
+loadThoughts();
+setInterval(loadThoughts, 4000);
+</script>
+{% endblock %}

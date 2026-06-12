@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Mente IA{% endblock %}
+{% block heading %}Mente de la IA{% endblock %}
+
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2>Última decisión por símbolo <a class="h-link" href="/pensamientos">ver pensamientos completos →</a></h2>
+    <div id="decisions" class="empty">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Reglas consolidadas <span class="h-link" id="rulesInfo"></span></h2>
+    <div class="hint" style="margin-bottom:10px;">
+      Cada cierto número de trades cerrados, la IA destila todas sus lecciones en un
+      set corto de reglas duraderas que entran en cada decisión.
+    </div>
+    <div id="rules" class="empty">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Lecciones aprendidas <span class="h-link" id="lessonCount"></span></h2>
+    <div class="hint" style="margin-bottom:10px;">
+      Cada trade cerrado genera una lección que se inyecta en los prompts siguientes:
+      así es como el bot mejora con la experiencia.
+    </div>
+    <div id="lessons" class="empty">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Calibración de confianza</h2>
+    <div class="hint" style="margin-bottom:10px;">
+      Cuando la IA declara X% de confianza, ¿cuánto acierta en realidad? Esta tabla
+      se le muestra en cada decisión para que su confianza sea honesta.
+    </div>
+    <table>
+      <thead><tr><th>Confianza declarada</th><th>Trades</th><th>Win rate real</th><th>P&L</th></tr></thead>
+      <tbody id="calibration"><tr><td colspan="4" class="empty">Sin trades cerrados aún</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card full">
+    <h2>Flujo de pensamiento en vivo <span class="h-link">lo que ve, decide y aprende, en orden</span></h2>
+    <div id="mindFeed" class="log-box" style="max-height:480px;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MIND_KINDS = new Set(['think', 'decision', 'learn']);
+
+window.renderPage = function (d) {
+  const decs = Object.entries(d.last_decisions);
+  document.getElementById('decisions').innerHTML = decs.length
+    ? decs.map(([sym, dec]) => decisionCard(sym, dec, true)).join('')
+    : '<div class="empty">Esperando primer análisis…</div>';
+
+  const rules = d.rules || [];
+  document.getElementById('rulesInfo').textContent = rules.length ? `${rules.length} activas` : '';
+  document.getElementById('rules').innerHTML = rules.length
+    ? rules.map(r => `<div class="lesson rule">${esc(r)}</div>`).join('')
+    : '<div class="empty">Aún no hay reglas: se generan automáticamente cada ' +
+      ((d.settings && d.settings.consolidate_every) || 10) + ' trades cerrados.</div>';
+
+  document.getElementById('lessonCount').textContent =
+    d.lessons.length ? `últimas ${d.lessons.length}` : '';
+  document.getElementById('lessons').innerHTML = d.lessons.length ? d.lessons.map(l => `
+    <div class="lesson">${esc(l.lesson)}
+      <div class="meta">${esc(l.symbol)}${catTag(l.symbol)} · resultado:
+        <span class="${pnlClass(l.from_profit)}">${fmt(l.from_profit)}</span> · ${esc(l.created_at)}</div>
+    </div>`).join('') : '<div class="empty">La IA aún no ha cerrado trades de los que aprender.</div>';
+
+  const cal = (d.stats && d.stats.calibration) || [];
+  document.getElementById('calibration').innerHTML = cal.length ? cal.map(c => `
+    <tr><td>${esc(c.bucket)}</td><td>${c.n}</td>
+      <td class="${c.win_rate >= 50 ? 'green' : 'red'}">${c.win_rate}%</td>
+      <td class="${pnlClass(c.profit)}">${fmt(c.profit)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">Sin trades cerrados aún</td></tr>';
+
+  const mind = d.events.filter(e => MIND_KINDS.has(e.kind)).slice(0, 150);
+  document.getElementById('mindFeed').innerHTML =
+    mind.map(logLine).join('') || '<div class="empty">Todavía no hay actividad de la IA</div>';
+};
+if (lastData) renderPage(lastData);
+</script>
+{% endblock %}

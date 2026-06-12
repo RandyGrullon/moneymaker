@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="metrics">
+    <div class="metric"><div class="label">Balance</div><div class="value" id="balance">—</div></div>
+    <div class="metric"><div class="label">Equity</div><div class="value" id="equity">—</div></div>
+    <div class="metric"><div class="label">Margen libre</div><div class="value" id="margin">—</div></div>
+    <div class="metric"><div class="label">P&L flotante</div><div class="value" id="floating">—</div></div>
+    <div class="metric"><div class="label">P&L total bot</div><div class="value" id="total_profit">—</div></div>
+    <div class="metric"><div class="label">Win rate</div><div class="value" id="winrate">—</div></div>
+    <div class="metric"><div class="label">Trades</div><div class="value" id="ntrades">—</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Curva de equity <span class="h-link" id="equityInfo"></span></h2>
+  <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Últimas decisiones de la IA <a class="h-link" href="/ia">ver todas →</a></h2>
+    <div id="decisions" class="empty">—</div>
+  </div>
+
+  <div class="card">
+    <h2>Actividad reciente <a class="h-link" href="/logs">ver todo →</a></h2>
+    <div id="miniLog" class="log-box" style="max-height:340px;"></div>
+  </div>
+
+  <div class="card full">
+    <h2>Posiciones abiertas <a class="h-link" href="/posiciones">gestionar →</a></h2>
+    <table>
+      <thead><tr><th>Ticket</th><th>Símbolo</th><th>Dir</th><th>Lotes</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Profit</th><th></th></tr></thead>
+      <tbody id="positions"><tr><td colspan="10" class="empty">Sin posiciones</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.renderPage = function (d) {
+  const a = d.account || {};
+  document.getElementById('balance').textContent = fmt(a.balance) + ' ' + (a.currency || '');
+  document.getElementById('equity').textContent = fmt(a.equity);
+  document.getElementById('margin').textContent = fmt(a.margin_free);
+  const fl = document.getElementById('floating');
+  fl.textContent = fmt(a.profit); fl.className = 'value ' + pnlClass(a.profit);
+  const tp = document.getElementById('total_profit');
+  tp.textContent = fmt(d.stats.total_profit); tp.className = 'value ' + pnlClass(d.stats.total_profit);
+  document.getElementById('winrate').textContent = d.stats.win_rate + '%';
+  document.getElementById('ntrades').textContent = d.stats.total_trades + ' (' + d.stats.wins + 'W/' + d.stats.losses + 'L)';
+
+  // Gráfico de equity (historial del servidor: sobrevive recargas de página)
+  drawEquityChart('equityChart', d.equity_history);
+  const h = d.equity_history;
+  document.getElementById('equityInfo').textContent = h.length >= 2
+    ? `${h.length} puntos · ${h[0].time} → ${h[h.length - 1].time}` : '';
+
+  // Top 4 decisiones más recientes
+  const decs = Object.entries(d.last_decisions)
+    .sort((x, y) => String(y[1].time).localeCompare(String(x[1].time)))
+    .slice(0, 4);
+  document.getElementById('decisions').innerHTML = decs.length
+    ? decs.map(([sym, dec]) => decisionCard(sym, dec)).join('')
+    : '<div class="empty">Esperando primer análisis…</div>';
+
+  // Mini log (últimos 12 eventos)
+  document.getElementById('miniLog').innerHTML =
+    d.events.slice(0, 12).map(logLine).join('') || '<div class="empty">Sin eventos</div>';
+
+  // Posiciones
+  document.getElementById('positions').innerHTML = d.positions.length
+    ? d.positions.map(p => positionRow(p)).join('')
+    : '<tr><td colspan="10" class="empty">Sin posiciones</td></tr>';
+};
+if (lastData) renderPage(lastData);
+</script>
+{% endblock %}

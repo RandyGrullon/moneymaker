@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Ajustes{% endblock %}
+{% block heading %}Ajustes{% endblock %}
+
+{% block content %}
+<div class="grid">
+
+  <div class="card">
+    <h2>Cuenta MT5</h2>
+    <div class="kv" style="margin-bottom:14px;">
+      <span class="k">Cuenta activa</span><span id="currentAccount" class="blue">—</span>
+      <span class="k">Balance</span><span id="accBalance">—</span>
+    </div>
+    <div class="form-row">
+      <label class="field" style="flex:1;">Cambiar a otra cuenta
+        <select id="accountSel"></select>
+      </label>
+      <button id="btnSwitch" onclick="switchAccount()">🔄 Cambiar</button>
+    </div>
+    <div class="hint" style="margin-bottom:14px;">
+      Las cuentas extra se leen de <b>accounts.json</b>. Al cambiar de cuenta, las posiciones
+      de la anterior quedan protegidas por su SL/TP en el broker.
+    </div>
+
+    <h2>Iniciar sesión nueva</h2>
+    <div class="form-row">
+      <label class="field">Nº de cuenta
+        <input id="loginUser" type="text" inputmode="numeric" placeholder="12345678" style="width:130px;">
+      </label>
+      <label class="field">Contraseña
+        <input id="loginPass" type="password" placeholder="••••••••" style="width:150px;">
+      </label>
+      <label class="field" style="flex:1;">Servidor
+        <input id="loginServer" type="text" placeholder="Broker-Demo">
+      </label>
+    </div>
+    <div class="form-row">
+      <button id="btnLogin" class="primary" onclick="doLogin()">Conectar y guardar</button>
+      <span class="hint">Se guarda directo en tu .env</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Parámetros del bot <span class="h-link">se aplican al instante y se guardan en el .env</span></h2>
+    <div class="form-row">
+      <label class="field">Trading real
+        <select id="sTrading" style="width:170px;">
+          <option value="true">Activado (opera)</option>
+          <option value="false">Solo análisis</option>
+        </select>
+      </label>
+      <label class="field">Confianza mínima %
+        <input id="sConf" type="number" min="0" max="95" step="1" style="width:110px;">
+      </label>
+      <label class="field">Riesgo por trade %
+        <input id="sRisk" type="number" min="0.05" max="10" step="0.05" style="width:110px;">
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="field">Máx. posiciones
+        <input id="sMaxPos" type="number" min="1" max="20" step="1" style="width:110px;">
+      </label>
+      <label class="field">Pérdida diaria máx %
+        <input id="sMaxLoss" type="number" min="0.5" max="50" step="0.5" style="width:110px;">
+      </label>
+      <label class="field">Segundos por ciclo
+        <input id="sLoop" type="number" min="10" max="3600" step="5" style="width:110px;">
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="field" title="No abrir trades si el spread supera este múltiplo del ATR">Spread máx (× ATR)
+        <input id="sSpread" type="number" min="0.05" max="2" step="0.05" style="width:110px;">
+      </label>
+      <label class="field" title="Tras N pérdidas seguidas en un símbolo, pausa de entradas en ese símbolo (0 = desactivado)">Cooldown: pérdidas seguidas
+        <input id="sCdLosses" type="number" min="0" max="10" step="1" style="width:110px;">
+      </label>
+      <label class="field">Cooldown: minutos
+        <input id="sCdMin" type="number" min="5" max="480" step="5" style="width:110px;">
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="field" title="No abrir trades N minutos ANTES de un dato de alto impacto (0 = off)">Noticias: bloqueo min antes
+        <input id="sNewsBefore" type="number" min="0" max="240" step="5" style="width:110px;">
+      </label>
+      <label class="field" title="Ni N minutos DESPUÉS del dato (0 = off)">Noticias: bloqueo min después
+        <input id="sNewsAfter" type="number" min="0" max="240" step="5" style="width:110px;">
+      </label>
+      <label class="field">Noticias: refresco (s)
+        <input id="sNewsRefresh" type="number" min="30" max="3600" step="30" style="width:110px;">
+      </label>
+    </div>
+    <div class="form-row">
+      <button class="primary" id="btnSave" onclick="saveSettings()">💾 Guardar ajustes</button>
+      <span class="hint" id="saveMsg"></span>
+    </div>
+
+    <h2 style="margin-top:18px;">Configuración fija <span class="h-link">se cambia en el .env y reiniciando</span></h2>
+    <div class="kv">
+      <span class="k">Símbolos</span><span id="cfgSymbols">—</span>
+      <span class="k">Timeframe</span><span id="cfgTf">—</span>
+      <span class="k">Modelo IA</span><span id="cfgModel">—</span>
+      <span class="k">Puerto UI</span><span id="cfgPort">—</span>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let settingsLoaded = false;
+
+window.renderPage = function (d) {
+  const a = d.account || {};
+  document.getElementById('currentAccount').textContent =
+    a.login ? `${a.login} @ ${a.server} (${a.currency})` : 'sin sesión';
+  document.getElementById('accBalance').textContent =
+    a.balance != null ? `${fmt(a.balance)} ${a.currency || ''}` : '—';
+
+  const s = d.settings || {};
+  document.getElementById('cfgSymbols').textContent = (s.symbols || []).join(', ') || '—';
+  document.getElementById('cfgTf').textContent = s.timeframe || '—';
+  document.getElementById('cfgModel').textContent =
+    s.ai_model ? `${s.ai_model} (${s.ai_provider})` : '—';
+  document.getElementById('cfgPort').textContent = s.ui_port || '—';
+
+  // El formulario solo se rellena una vez para no pisar lo que estés escribiendo
+  if (!settingsLoaded && s.min_confidence != null) {
+    settingsLoaded = true;
+    document.getElementById('sTrading').value = String(!!s.trading_enabled);
+    document.getElementById('sConf').value = s.min_confidence;
+    document.getElementById('sRisk').value = s.risk_per_trade_pct;
+    document.getElementById('sMaxPos').value = s.max_open_positions;
+    document.getElementById('sMaxLoss').value = s.max_daily_loss_pct;
+    document.getElementById('sLoop').value = s.loop_seconds;
+    document.getElementById('sSpread').value = s.max_spread_atr_ratio;
+    document.getElementById('sCdLosses').value = s.cooldown_after_losses;
+    document.getElementById('sCdMin').value = s.cooldown_minutes;
+    document.getElementById('sNewsBefore').value = s.news_block_before_min;
+    document.getElementById('sNewsAfter').value = s.news_block_after_min;
+    document.getElementById('sNewsRefresh').value = s.news_refresh_seconds;
+  }
+};
+if (lastData) renderPage(lastData);
+
+async function saveSettings() {
+  const body = {
+    trading_enabled: document.getElementById('sTrading').value === 'true',
+    min_confidence: document.getElementById('sConf').value,
+    risk_per_trade_pct: document.getElementById('sRisk').value,
+    max_open_positions: document.getElementById('sMaxPos').value,
+    max_daily_loss_pct: document.getElementById('sMaxLoss').value,
+    loop_seconds: document.getElementById('sLoop').value,
+    max_spread_atr_ratio: document.getElementById('sSpread').value,
+    cooldown_after_losses: document.getElementById('sCdLosses').value,
+    cooldown_minutes: document.getElementById('sCdMin').value,
+    news_block_before_min: document.getElementById('sNewsBefore').value,
+    news_block_after_min: document.getElementById('sNewsAfter').value,
+    news_refresh_seconds: document.getElementById('sNewsRefresh').value,
+  };
+  const btn = document.getElementById('btnSave');
+  const msg = document.getElementById('saveMsg');
+  btn.disabled = true; msg.textContent = '';
+  try {
+    const r = await (await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })).json();
+    if (r.ok) { msg.textContent = '✔ Guardado'; msg.style.color = 'var(--green)'; }
+    else { msg.textContent = '✖ ' + (r.error || 'error'); msg.style.color = 'var(--red)'; }
+  } catch (e) {
+    msg.textContent = '✖ Error de conexión'; msg.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { msg.textContent = ''; }, 4000);
+  }
+}
+
+async function loadAccounts() {
+  try {
+    const accounts = await (await fetch('/api/accounts')).json();
+    const sel = document.getElementById('accountSel');
+    if (!accounts.length) {
+      sel.innerHTML = '<option>No hay cuentas en accounts.json</option>';
+      document.getElementById('btnSwitch').disabled = true;
+      return;
+    }
+    document.getElementById('btnSwitch').disabled = false;
+    sel.innerHTML = accounts.map(a =>
+      `<option value="${esc(a.name)}" ${a.current ? 'selected' : ''}>` +
+      `${esc(a.name)} — ${a.login} @ ${esc(a.server)}${a.current ? ' (actual)' : ''}</option>`
+    ).join('');
+  } catch (e) { /* servidor aún arrancando */ }
+}
+
+async function switchAccount() {
+  const name = document.getElementById('accountSel').value;
+  if (!confirm(`¿Cambiar a la cuenta "${name}"?\n\nOJO: si la cuenta actual tiene posiciones abiertas, ` +
+               'el bot dejará de gestionarlas (quedan protegidas por su SL/TP en el broker).')) return;
+  const btn = document.getElementById('btnSwitch');
+  btn.disabled = true; btn.textContent = '⏳ Cambiando...';
+  try {
+    const r = await (await fetch('/api/switch_account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })).json();
+    if (!r.ok) alert('No se pudo cambiar de cuenta: ' + (r.error || 'error desconocido'));
+  } finally {
+    btn.disabled = false; btn.textContent = '🔄 Cambiar';
+    await loadAccounts();
+    refresh();
+  }
+}
+
+async function doLogin() {
+  const login = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const server = document.getElementById('loginServer').value.trim();
+  if (!login || !password || !server) { alert('Completa login, contraseña y servidor.'); return; }
+  const btn = document.getElementById('btnLogin');
+  btn.disabled = true; btn.textContent = '⏳ Conectando...';
+  try {
+    const r = await (await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login, password, server }),
+    })).json();
+    if (r.ok) {
+      document.getElementById('loginPass').value = '';
+    } else {
+      alert('No se pudo iniciar sesión: ' + (r.error || 'error desconocido'));
+    }
+  } catch (e) {
+    alert('Error de conexión con el servidor');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Conectar y guardar';
+    loadAccounts();
+    refresh();
+  }
+}
+
+loadAccounts();
+setInterval(loadAccounts, 15000);
+</script>
+{% endblock %}
