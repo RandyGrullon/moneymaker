@@ -19,3 +19,7 @@ logs/
 venv/
 .venv/
 env/
+
+# IDE & agent settings
+.claude/
+graphify-out/
